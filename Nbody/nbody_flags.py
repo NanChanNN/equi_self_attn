@@ -7,6 +7,8 @@ def get_flags():
     parser = argparse.ArgumentParser()
 
     # Model parameters
+    parser.add_argument('--model', type=str, default='MyModel_SOD',
+                        help="Model type")
     parser.add_argument('--num_layers', type=int, default=4,
                         help="Number of equivariant layers")
     parser.add_argument('--num_channels', type=int, default=4,
@@ -49,13 +51,13 @@ def get_flags():
     parser.add_argument('--verbose', type=int, default=0)
 
     # Miscellanea
-    parser.add_argument('--num_workers', type=int, default=4,
+    parser.add_argument('--num_workers', type=int, default=2,
                         help="Number of data loader workers")
     parser.add_argument('--profile', action='store_true',
                         help="Exit after 10 steps for profiling")
 
     # Random seed for both Numpy and Pytorch
-    parser.add_argument('--seed', type=int, default=374)
+    parser.add_argument('--seed', type=int, default=2022)
 
     FLAGS, UNPARSED_ARGV = parser.parse_known_args()
 

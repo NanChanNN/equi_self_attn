@@ -76,8 +76,8 @@ def train_epoch(epoch, model, loss_fnc, dataloader, optimizer, FLAGS):
         optimizer.step()
 
         # print to console
-        if i % FLAGS.print_interval == 0:
-            print(f"[{epoch}|{i}] loss: {loss:.5f}")
+        # if i % FLAGS.print_interval == 0:
+        #     print(f"[{epoch}|{i}] loss: {loss:.5f}")
 
     # log train accuracy for entire epoch to wandb
     loss_epoch /= len(dataloader)
@@ -169,7 +169,12 @@ def main(FLAGS, UNPARSED_ARGV):
     FLAGS.test_size = len(test_dataset)
     assert len(test_dataset) < len(train_dataset)
     
-    model = t_pkg.NBodyModel(num_layers=FLAGS.num_layers-1, num_hidden_channels=FLAGS.num_channels)
+    if FLAGS.model == 'MyModel_OD':
+        model = t_pkg.NBodyModel(num_layers=FLAGS.num_layers-1, num_hidden_channels=FLAGS.num_channels, 
+                             invariant_mod='OD', cross_product=False)
+    elif FLAGS.model == 'MyModel_SOD':
+        model = t_pkg.NBodyModel(num_layers=FLAGS.num_layers-1, num_hidden_channels=FLAGS.num_channels, 
+                             invariant_mod='SOD', cross_product=True)
     model.to(FLAGS.device)
 
     # Optimizer settings
@@ -182,13 +187,13 @@ def main(FLAGS, UNPARSED_ARGV):
         train_epoch(epoch, model, task_loss, train_loader, optimizer, FLAGS)
         test_acc = test_epoch(epoch, model, task_loss, test_loader, FLAGS, dT)
     
-    print('test acc.: ', test_acc)
+    print('Seed: ', FLAGS.seed, ' Channels: ', FLAGS.num_channels, ' Test Acc.: ', test_acc)
     
 if __name__ == '__main__':
     FLAGS, UNPARSED_ARGV = get_flags()
     
-    print("\n\nFLAGS:", FLAGS)
-    print("UNPARSED_ARGV:", UNPARSED_ARGV, "\n\n")
+    # print("\n\nFLAGS:", FLAGS)
+    # print("UNPARSED_ARGV:", UNPARSED_ARGV, "\n\n")
 
     # Where the magic is
     try:

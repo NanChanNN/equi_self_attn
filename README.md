@@ -2,8 +2,7 @@
 
 **Introduction**
 
-This is an anonymous repository of the official implementation of paper *Equivariant self-attention via invariant features*.
-
+This is a repository of the official implementation of paper *Equivariant self-attention via invariant features*. Module implementation is placed in `modules/attn_modules.py`.
 
 
 **Prerequisites**
@@ -23,10 +22,14 @@ This is an anonymous repository of the official implementation of paper *Equivar
    ```
 
 2) Run the experiment using the following commands: 
+    For OD model:
    ```shell
-   python nbody_run.py --batch_size 128 --num_channels 4 --num_layers 4 --data_str 5_new
+   python nbody_run.py --batch_size 128 --num_channels 5 --num_layers 4 --data_str 5_new --model MyModel_OD
    ```
-
+    For SOD model:
+   ```shell
+   python nbody_run.py --batch_size 128 --num_channels 4 --num_layers 4 --data_str 5_new --model MyModel_SOD
+   ```
 
 
 **Steps to run the QM9 experiment**:
@@ -34,11 +37,15 @@ This is an anonymous repository of the official implementation of paper *Equivar
 1) Download a preprocessed QM9 dataset [here](https://drive.google.com/file/d/1EpJG0Bo2RPK30bMKK6IUdsR5r0pTBEP0/view?usp=sharing) and put it into `qm9`
 
 2) Run the experiment using the following commands (use task *homo* as an example):
-
+   For OD model: 
    ```shell
-   python qm9_run.py --task homo --batch_size 128 --num_epochs 200 --num_layers 7 --div 2 --head 8 --pooling sum
+   python qm9_run.py --task homo --batch_size 128 --num_epochs 200 --num_layers 7 --div 2 --head 8 --pooling sum --model MyModel_OD
    ```
-
+   For SOD model:
+   ```shell
+   python qm9_run.py --task homo --batch_size 128 --num_epochs 200 --num_layers 7 --div 2 --head 8 --pooling sum --model MyModel_SOD
+   ```
+    
 3) To evaluate the model on other tasks, set `--task` option to one of `['homo, 'mu', 'alpha', 'lumo', 'gap', 'cv']`.
 
    

@@ -136,8 +136,14 @@ def main(FLAGS, UNPARSED_ARGV):
     FLAGS.test_size = len(test_dataset)
 
     # Construct the model
-    model = t_pkg.QM9Model(num_layers=FLAGS.num_layers, pooling=FLAGS.pooling, heads=FLAGS.head, 
-                                       div=FLAGS.div, hidden_dim=FLAGS.num_channels).to(FLAGS.device)
+    if FLAGS.model == 'MyModel_OD':
+        model = t_pkg.QM9Model(num_layers=FLAGS.num_layers, invariant_mod='OD', cross_product=False,
+                               pooling=FLAGS.pooling, heads=FLAGS.head, div=FLAGS.div, 
+                               hidden_dim=FLAGS.num_channels).to(FLAGS.device)
+    elif FLAGS.model == 'MyModel_SOD':
+        model = t_pkg.QM9Model(num_layers=FLAGS.num_layers, invariant_mod='SOD', cross_product=True,
+                               pooling=FLAGS.pooling, heads=FLAGS.head, div=FLAGS.div, 
+                               hidden_dim=FLAGS.num_channels).to(FLAGS.device)
     model.to(FLAGS.device)
 
     # Optimizer settings
@@ -171,6 +177,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     # Model parameters
+    parser.add_argument('--model', type=str, default='MyModel_SOD',
+                        help="Model type")
     parser.add_argument('--num_layers', type=int, default=7,
             help="Number of equivariant layers")
     parser.add_argument('--num_channels', type=int, default=128,
@@ -209,7 +217,7 @@ if __name__ == '__main__':
             help="Number of data loader workers")
 
     # Random seed for both Numpy and Pytorch
-    parser.add_argument('--seed', type=int, default=374)
+    parser.add_argument('--seed', type=int, default=2022)
 
     FLAGS, UNPARSED_ARGV = parser.parse_known_args()
 
@@ -219,7 +227,7 @@ if __name__ == '__main__':
 
     # Automatically choose GPU if available
     if torch.cuda.is_available():
-        FLAGS.device = torch.device('cuda:3')
+        FLAGS.device = torch.device('cuda:0')
     else:
         torch.device('cpu')
 

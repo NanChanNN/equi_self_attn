@@ -14,6 +14,8 @@ import dgl.function as fn
 from dgl.nn.functional import edge_softmax
 
 default_MLP_archi = {}
+global_total_counter = 0
+global_rank2_counter = 0
 
 def truncate_normal_initialization(weights, scale=1.0):
     fan_out, fan_in = weights.shape
@@ -108,6 +110,86 @@ def build_MLP_network(in_dim, out_dim, archi: dict = default_MLP_archi):
     return nn.Sequential(*mlp_net)
 
 
+class SODInvariantScalars(nn.Module):
+    """ NN parameterized SO(d)-invariant scalar function.
+    g(VV^T, scalars, minors(V)) -> scalar
+    """
+    def __init__(self, m_in_vec: int, m_in_s: int, out_dim: int, net_archi: dict = default_MLP_archi):
+        """
+        :param m_in_vec: channels of input vector features
+        :param m_in_s: channels of input scalar features
+        :param out_dim: dimension of the output feature
+        :param net_archi: the dimension of hidden layers in the network
+        """
+        super(SODInvariantScalars, self).__init__()
+        self.m_in_vec = m_in_vec
+        self.m_in_s = m_in_s
+        self.out_dim = out_dim
+        
+        triu_idx = torch.triu_indices(m_in_vec, m_in_vec)
+        assert triu_idx.shape[1] == int(m_in_vec * (m_in_vec + 1) / 2)
+        self.register_buffer('triu_idx', triu_idx)
+
+        sub_idx = torch.combinations(torch.arange(m_in_vec), 3, False)
+        if sub_idx.shape[0] != 0:
+            self.register_buffer('sub_idx', torch.flatten(sub_idx))
+        else:
+            self.register_buffer('sub_idx', None)
+
+        self.in_dim = m_in_s + self.triu_idx.shape[1] + sub_idx.shape[0]
+        self.net = build_MLP_network(self.in_dim, self.out_dim, net_archi)
+
+    def __repr__(self):
+        return f"SODInvariantScalars(m_in_vec={self.m_in_vec}, m_in_s={self.m_in_s}, " \
+               f"out_dim={self.out_dim}, hidden_dim={self.hidden_dim})"
+
+    @staticmethod
+    def _compute_determinant(A: torch.Tensor):
+        """ Compute the determinant of batched 3x3 matrices
+        :param A: ..., 3, 3
+        :return:
+        """
+        output = A[..., 0, 0] * A[..., 1, 1] * A[..., 2, 2] + \
+                 A[..., 0, 1] * A[..., 1, 2] * A[..., 2, 0] + \
+                 A[..., 0, 2] * A[..., 1, 0] * A[..., 2, 1] - \
+                 A[..., 0, 2] * A[..., 1, 1] * A[..., 2, 0] - \
+                 A[..., 0, 1] * A[..., 1, 0] * A[..., 2, 2] - \
+                 A[..., 0, 0] * A[..., 1, 2] * A[..., 2, 1]
+        return output
+
+    def forward(self, features: dict):
+        """
+        :param features: dict,
+            'vec': B, m_in_vec, 3
+            'scalar': B, m_in_s, 1
+        :return:
+            B, out_dim
+        """
+        net_input_features = []
+
+        if 'vec' in features:
+            v_mat = features['vec']  # B, m_in_vec, 3
+            B = v_mat.shape[0]
+            inner_product = torch.einsum('...ik, ...jk->...ij', v_mat, v_mat)  # B, m_in_vec, m_in_vec
+            inner_product = inner_product[..., self.triu_idx[0], self.triu_idx[1]]  # B, m_in_vec * (m_in_vec + 1) / 2
+            net_input_features.append(inner_product)
+
+            if self.sub_idx is not None:
+                sub_mat = torch.index_select(v_mat, 1, self.sub_idx)
+                sub_mat = sub_mat.reshape(B, -1, 3, 3)
+                sub_det = self._compute_determinant(sub_mat)
+                net_input_features.append(sub_det)      # B, (n,3)
+
+        if 'scalar' in features:
+            s_vec = features['scalar'][..., 0]
+            net_input_features.append(s_vec)
+
+        net_input_features = torch.cat(net_input_features, dim=-1)
+        scalar_weights = self.net(net_input_features)  # B, out_dim
+
+        return scalar_weights
+    
+
 class ODInvariantScalars(nn.Module):
     """NN parameterized O(d)-invariant scalar function.
     g(VV^T, scalars) -> scalar
@@ -124,6 +206,7 @@ class ODInvariantScalars(nn.Module):
         self.m_in_vec = m_in_vec
         self.m_in_s = m_in_s
         self.in_dim = int((m_in_vec + 1) * m_in_vec / 2) + m_in_s
+        # self.in_dim = m_in_vec * m_in_vec + m_in_s
         self.out_dim = out_dim
 
         self.net = build_MLP_network(self.in_dim, self.out_dim, net_archi)
@@ -151,6 +234,7 @@ class ODInvariantScalars(nn.Module):
             B = v_mat.shape[0]
             inner_product = torch.einsum('...ik, ...jk->...ij', v_mat, v_mat)   # B, m_in_vec, m_in_vec
             inner_product = inner_product[..., self.triu_idx[0], self.triu_idx[1]]  # B, m_in_vec * (m_in_vec + 1) / 2
+            # inner_product = inner_product.reshape(B, self.m_in_vec * self.m_in_vec)
             net_input_features.append(inner_product)
         
         if 'scalar' in features:
@@ -169,8 +253,8 @@ class SO3EquivariantVector(nn.Module):
     The updated scalar vector is extracted from the output of ODInvariantScalars
     """
 
-    def __init__(self, m_in_vec: int, m_out_vec: int, m_in_s: int, m_out_s: int, input_LN: bool = False, 
-                 net_archi: dict = default_MLP_archi):
+    def __init__(self, m_in_vec: int, m_out_vec: int, m_in_s: int, m_out_s: int, invariant_mod: str, 
+                 cross_product: bool, input_LN: bool = False, net_archi: dict = default_MLP_archi):
         """
         :param m_in_vec: channels of input vector features
         :param m_out_vec: channels of output vector features
@@ -179,10 +263,18 @@ class SO3EquivariantVector(nn.Module):
         """
         super(SO3EquivariantVector, self).__init__()
         assert (m_out_vec == 0) or (m_in_vec >0)
+        assert invariant_mod in ['OD', 'SOD'], 'unresolved invariant module %s'%(str(invariant_mod))
 
         self.m_in_vec = m_in_vec
         self.m_out_vec = m_out_vec
-        self.m_cross_prod = int(m_in_vec * (m_in_vec - 1) / 2)
+        if cross_product:
+            self.cross_product = True
+        else:
+            self.cross_product = False
+        if self.cross_product:
+            self.m_cross_prod = int(m_in_vec * (m_in_vec - 1) / 2)
+        else:
+            self.m_cross_prod = 0
         self.m_in_s = m_in_s
         self.m_out_s = m_out_s
         self.input_LN = input_LN
@@ -195,7 +287,10 @@ class SO3EquivariantVector(nn.Module):
         self.out_dim_s = self.m_out_s
         self.out_dim = self.out_dim_vec + self.out_dim_s
 
-        self.scalar_nets = ODInvariantScalars(self.m_in_vec, self.m_in_s, self.out_dim, net_archi=net_archi)
+        if invariant_mod == 'OD':
+            self.scalar_nets = ODInvariantScalars(self.m_in_vec, self.m_in_s, self.out_dim, net_archi=net_archi)
+        else:
+            self.scalar_nets = SODInvariantScalars(self.m_in_vec, self.m_in_s, self.out_dim, net_archi=net_archi)
 
         # cross product indices
         cross_prod_idx = torch.triu_indices(m_in_vec, m_in_vec, offset=1)
@@ -225,7 +320,7 @@ class SO3EquivariantVector(nn.Module):
             v_mat = features['vec']
             B = v_mat.shape[0]
             vec_weights = vec_weights.reshape(B, self.m_out_vec, self.m_cross_prod + self.m_in_vec)
-            if self.m_in_vec > 1:
+            if self.m_in_vec > 1 and self.cross_product:
                 c0, c1 = self.cross_prod_idx
                 mat0 = torch.gather(v_mat, 1, c0[None, :, None].expand(B, -1, 3))  # B, m_cross_prod, 3
                 mat1 = torch.gather(v_mat, 1, c1[None, :, None].expand(B, -1, 3))  # B, m_cross_prod, 3
@@ -240,14 +335,15 @@ class SO3EquivariantVector(nn.Module):
             new_features['scalar'] = s_weights.unsqueeze(-1)    # B, m_out_s, 1
 
         return new_features
-
+    
 
 class PairwiseSO3Conv(nn.Module):
     """ Generate pairwise features.
     f_ji = h('f_j', 's_j', x_i - x_j, edge_ji)   -> {'vec' , 'scalar'}
     """
-    def __init__(self, m_in_vec: int, m_out_vec: int, m_in_s: int, m_out_s: int, edge_dim: int = 0,
-                 net_archi: dict = default_MLP_archi):
+
+    def __init__(self, m_in_vec: int, m_out_vec: int, m_in_s: int, m_out_s: int, invariant_mod: str,
+                 cross_product: bool, edge_dim: int = 0, net_archi: dict = default_MLP_archi):
         """
         :param m_in_vec: channels of input vector features
         :param m_out_vec: channels of output vector features
@@ -262,9 +358,10 @@ class PairwiseSO3Conv(nn.Module):
         self.m_out_s = m_out_s
         self.edge_dim = edge_dim
 
-        net_in_vec = m_in_vec + 1   # cat(f_j, x_i - x_j)
-        net_in_s = m_in_s + edge_dim    # cat(s_j, edge_ji)
-        self.net = SO3EquivariantVector(net_in_vec, m_out_vec, net_in_s, m_out_s, net_archi=net_archi)
+        net_in_vec = m_in_vec + 1  # cat(f_j, x_i - x_j)
+        net_in_s = m_in_s + edge_dim  # cat(s_j, edge_ji)
+        self.net = SO3EquivariantVector(net_in_vec, m_out_vec, net_in_s, m_out_s, invariant_mod, cross_product,
+                                        net_archi=net_archi)
 
     def __repr__(self):
         return f"PairwiseSO3Conv(m_in_vec={self.m_in_vec}, m_out_vec={self.m_out_vec}, m_in_s={self.m_in_s}," \
@@ -291,10 +388,10 @@ class PairwiseSO3Conv(nn.Module):
                 add_feat.append(edges.src['scalar'])  # num_edges, m_in_s, 1
                 assert add_feat[-1].shape[-2] == self.m_in_s
             if 'w' in edges.data and self.edge_dim != 0:
-                add_feat.append(edges.data['w'].unsqueeze(-1))    # num_edges, edge_dim, 1
+                add_feat.append(edges.data['w'].unsqueeze(-1))  # num_edges, edge_dim, 1
                 assert add_feat[-1].shape[-2] == self.edge_dim
             if len(add_feat) != 0:
-                input_feat_dict['scalar'] = torch.cat(add_feat, dim=-2)     # num_edges, m_in_s + edge_dim, 1
+                input_feat_dict['scalar'] = torch.cat(add_feat, dim=-2)  # num_edges, m_in_s + edge_dim, 1
 
             out_dict = self.net(input_feat_dict)  # num_edges, m_out, 3
             return out_dict
@@ -397,9 +494,10 @@ class SO3EquivariantAttenRes(nn.Module):
     node. It also contains skip self-interaction
     """
 
-    def __init__(self, m_in: dict, m_qk: dict, m_v: dict, m_out: dict, edge_dim: int = 0, heads: int = 1,
-                 recurrent: bool = False, recur_drop = 0.10, skip_type: str = 'cat', input_LN = False, 
-                 q_archi: dict = default_MLP_archi, k_archi: dict = default_MLP_archi, v_archi: dict = default_MLP_archi,
+    def __init__(self, m_in: dict, m_qk: dict, m_v: dict, m_out: dict, invariant_mod: str, cross_product: bool,
+                 edge_dim: int = 0, heads: int = 1, recurrent: bool = False, recur_drop={'vec': 0.0, 'scalar': 0.0},
+                 skip_type: str = 'cat', input_LN=False, q_archi: dict = default_MLP_archi,
+                 k_archi: dict = default_MLP_archi, v_archi: dict = default_MLP_archi,
                  out_archi: dict = default_MLP_archi):
         """
         :param m_in: dict, channels of input vectors and scalars
@@ -424,32 +522,32 @@ class SO3EquivariantAttenRes(nn.Module):
             self.input_layer_norm = SO3LayerNorm(m_in)
 
         self.query_net = SO3EquivariantVector(m_in['vec'], m_qk['vec'], m_in['scalar'], m_qk['scalar'],
-                                              net_archi=q_archi)
-        self.key_net = PairwiseSO3Conv(m_in['vec'], m_qk['vec'], m_in['scalar'], m_qk['scalar'], edge_dim=edge_dim,
-                                       net_archi=k_archi)
-        self.value_net = PairwiseSO3Conv(m_in['vec'], m_v['vec'], m_in['scalar'], m_v['scalar'], edge_dim=edge_dim,
-                                         net_archi=v_archi)
+                                              invariant_mod, cross_product, net_archi=q_archi)
+        self.key_net = PairwiseSO3Conv(m_in['vec'], m_qk['vec'], m_in['scalar'], m_qk['scalar'], invariant_mod,
+                                       cross_product, edge_dim=edge_dim, net_archi=k_archi)
+        self.value_net = PairwiseSO3Conv(m_in['vec'], m_v['vec'], m_in['scalar'], m_v['scalar'], invariant_mod,
+                                         cross_product, edge_dim=edge_dim, net_archi=v_archi)
         self.attn_mod = AttentionModule(heads)
 
         if self.skip_type == 'cat':
             self.skip_module = SkipCat()
             self.out_net = SO3EquivariantVector(m_in['vec'] + m_v['vec'], m_out['vec'], m_in['scalar'] + m_v['scalar'],
-                                                m_out['scalar'], net_archi=out_archi)
+                                                m_out['scalar'], invariant_mod, cross_product, net_archi=out_archi)
         elif self.skip_type == 'sum':
             self.skip_module = SkipSum()
-            self.out_net = SO3EquivariantVector(m_v['vec'], m_out['vec'], m_v['scalar'], m_out['scalar'],
-                                                net_archi=out_archi)
+            self.out_net = SO3EquivariantVector(m_v['vec'], m_out['vec'], m_v['scalar'], m_out['scalar'], invariant_mod,
+                                                cross_product, net_archi=out_archi)
         elif self.skip_type == 'gate':
             self.skip_module = SkipGate(m_in, m_v)
-            self.out_net = SO3EquivariantVector(m_v['vec'], m_out['vec'], m_v['scalar'], m_out['scalar'],
-                                                net_archi=out_archi)
+            self.out_net = SO3EquivariantVector(m_v['vec'], m_out['vec'], m_v['scalar'], m_out['scalar'], invariant_mod,
+                                                cross_product, net_archi=out_archi)
         elif self.skip_type == 'none':
             self.skip_module = None
-            self.out_net = SO3EquivariantVector(m_v['vec'], m_out['vec'], m_v['scalar'], m_out['scalar'],
-                                                net_archi=out_archi)
+            self.out_net = SO3EquivariantVector(m_v['vec'], m_out['vec'], m_v['scalar'], m_out['scalar'], invariant_mod,
+                                                cross_product, net_archi=out_archi)
         else:
-            raise ValueError('Unknown skip type in SO3EquivariantAttenRes: {}'.format(self.skip_type)) 
-        
+            raise ValueError('Unknown skip type in SO3EquivariantAttenRes: {}'.format(self.skip_type))
+
         if self.recurrent:
             assert (m_in['vec'] == m_out['vec']) and (m_in['scalar'] == m_out['scalar'])
             self.recurrent_drop = SO3Dropout(m_out, p=recur_drop)
@@ -472,15 +570,17 @@ class SO3EquivariantAttenRes(nn.Module):
             features = self.input_layer_norm(features)
 
         queries = self.query_net(features)  # dict {B, m_qk['vec'], 3; B, m_qk['scalar'], 1}
-        keys = self.key_net(features, G)    # dict {B, m_qk['vec'], 3; B, m_qk['scalar'], 1}
-        values = self.value_net(features, G)    # dict {B, m_v['vec'], 3; B, m_v['scalar'], 1}
+        keys = self.key_net(features, G)  # dict {B, m_qk['vec'], 3; B, m_qk['scalar'], 1}
+        values = self.value_net(features, G)  # dict {B, m_v['vec'], 3; B, m_v['scalar'], 1}
         updated_feat = self.attn_mod(queries, keys, values, G, features)  # dict {B, m_v['vec'], 3; B, m_v['scalar'], 1}
-        
+
         if self.skip_module is not None:
             updated_feat = self.skip_module(features, updated_feat)
         updated_feat = self.out_net(updated_feat)
 
         if self.recurrent:
+            # Maybe add drop out on features. Also, it seems that adding features output from layer norm seems not a
+            # good idea
             updated_feat = self.recurrent_drop(updated_feat)
             updated_feat = {key: value + features[key] for key, value in updated_feat.items()}
 
@@ -570,7 +670,8 @@ class SkipGate(nn.Module):
 
 class SO3Dropout(nn.Module):
     """SO3 Dropout modules"""
-    def __init__(self, m_in: dict, p: float = 0.1):
+
+    def __init__(self, m_in: dict, p: dict):
         """
         :param m_in: dict, channels of input vectors and scalars.
         """
@@ -581,11 +682,11 @@ class SO3Dropout(nn.Module):
         self.eps = 1e-12
         for data_type, channel in m_in.items():
             if channel != 0:
-                self.dropout_mods[data_type] = nn.Dropout(p=self.dropout_rate)
-        
+                self.dropout_mods[data_type] = nn.Dropout(p=self.dropout_rate[data_type])
+
     def __repr__(self):
         return f"SO3Dropout(m_in={self.m_in}, dropout_rate={self.dropout_rate})"
-    
+
     def forward(self, features: dict, **kwargs):
         """
         :param features: dict
@@ -601,26 +702,27 @@ class SO3Dropout(nn.Module):
             data_item = features['vec']
             norm = torch.sqrt(torch.sum(torch.square(data_item), dim=-1, keepdim=True) + self.eps)  # B, m_in[*], 1
             phase = data_item / norm  # B, m_in[*], dim
-            transformed = self.dropout_mods['vec'](norm) # B, m_in[*], 1
+            transformed = self.dropout_mods['vec'](norm)  # B, m_in[*], 1
             new_features['vec'] = transformed * phase  # B, m_in[*], dim
         if 'scalar' in self.dropout_mods:
             data_item = features['scalar']  # B, m_in[*], dim
             new_features['scalar'] = self.dropout_mods['scalar'](data_item)  # B, m_in[*], dim
         return new_features
-            
+
 
 class NormBias(nn.Module):
     """Norm-based SO(3)-equivariant nonlinearity with only learned biases."""
 
-    def __init__(self, m_in: dict, non_lin=nn.ReLU(), shifted: str = 'none', init: str = 'rand'):
+    def __init__(self, m_in: dict, non_lin=nn.ReLU(), shifted: dict = {'vec': 'none', 'scalar': 'none'},
+                 init: dict = {'vec': 'rand', 'scalar': 'rand'}):
         """
         :param m_in: dict, channels of input vectors and scalars
         :param non_lin: non-linearity
         :param shifted: normalization technique, ['LN', 'BN', or 'none']
         """
         super(NormBias, self).__init__()
-        assert shifted in ['LN', 'none', 'BN'], 'Unresolved shifted type'
-        assert init in ['rand', 'zero'], 'Unresolved shifted type'
+        for key, value in shifted.items(): assert value in ['LN', 'none', 'BN'], 'Unresolved shifted type' + key
+        for key, value in init.items(): assert value in ['rand', 'zero'], 'Unresolved shifted type ' + key
 
         self.m_in = m_in
         self.bias = nn.ParameterDict()
@@ -631,13 +733,13 @@ class NormBias(nn.Module):
 
         for data_type, channel in m_in.items():
             if channel != 0:
-                if init == 'rand':
+                if init[data_type] == 'rand':
                     self.bias[data_type] = nn.Parameter(torch.rand(1, channel), requires_grad=True)
                 else:
                     self.bias[data_type] = nn.Parameter(torch.zeros(1, channel), requires_grad=True)
-                if shifted == 'LN':
+                if shifted[data_type] == 'LN':
                     self.shift_module[data_type] = nn.LayerNorm(channel)
-                elif shifted == 'BN':
+                elif shifted[data_type] == 'BN':
                     self.shift_module[data_type] = nn.BatchNorm1d(channel)
 
     def __repr__(self):
