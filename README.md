@@ -55,5 +55,4 @@ This is a repository of the official implementation of paper *Equivariant self-a
 **Credit to 'SE3-Transformer'**
 
 The scripts of our NBody and QM9 experiments (in subfolder `NBody/` and `QM9/`) are strongly based on https://github.com/FabianFuchsML/se3-transformer-public, which is under the MIT license.
-```
 
