@@ -54,14 +54,6 @@ This is a repository of the official implementation of paper *Equivariant self-a
 
 **Credit to 'SE3-Transformer'**
 
-The scripts of our NBody and QM9 experiments (in subfolder `NBody/` and `QM9/`) are strongly based on https://github.com/FabianFuchsML/se3-transformer-public, which is under the MIT license. It consists of the official implementation of the following paper:
-
-```
-@inproceedings{fuchs2020se3transformers,
-    title={SE(3)-Transformers: 3D Roto-Translation Equivariant Attention Networks},
-    author={Fabian B. Fuchs and Daniel E. Worrall and Volker Fischer and Max Welling},
-    year={2020},
-    booktitle = {Advances in Neural Information Processing Systems 34 (NeurIPS)},
-}
+The scripts of our NBody and QM9 experiments (in subfolder `NBody/` and `QM9/`) are strongly based on https://github.com/FabianFuchsML/se3-transformer-public, which is under the MIT license.
 ```
 
